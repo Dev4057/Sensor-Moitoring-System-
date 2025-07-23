@@ -14,8 +14,8 @@ void setup() {
 }
 
 void loop() {
-  // Wait a few seconds between measurements
-  delay(2000);
+  // Drastically reduce delay to send data very frequently
+  delay(50); // Changed from 1000ms to 50ms (0.05 seconds)
 
   // Read temperature and humidity
   float humidity = dht.readHumidity();
