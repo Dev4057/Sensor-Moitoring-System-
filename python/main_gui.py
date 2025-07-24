@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import serial
+import serial.tools.list_ports
 import csv
 import time
 import re
@@ -15,20 +16,31 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.dates as mdates
 
-# Import the report generation function from our other script
-from generate_report import generate_report
+# --- Dummy function for report generation if the other file is missing ---
+# This is to make the script runnable on its own.
+# Replace this with your actual import if you have the file.
+try:
+    from generate_report import generate_report
+except ImportError:
+    print("Warning: 'generate_report.py' not found. Using a dummy function.")
+    def generate_report(start_date, end_date):
+        print(f"Dummy report generated from {start_date} to {end_date}")
+        # In a real scenario, you would show a messagebox or handle this.
+        # For this example, we'll just print to the console.
+        messagebox.showinfo("Report Dummy", f"This is a placeholder for the report from\n{start_date} to {end_date}")
+
 
 # --- Configuration ---
-SERIAL_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 9600
-CSV_FILE = 'data/data.csv'
+DATA_DIR = 'data'
+CSV_FILE = os.path.join(DATA_DIR, 'data.csv')
 MAX_DATA_POINTS = 30 # Number of points to show on the live graph
 
 class SensorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Sensor Monitoring System")
-        self.root.geometry("850x650")
+        self.root.geometry("900x650")
 
         self.is_monitoring = False
         self.alert_active = False
@@ -43,6 +55,10 @@ class SensorApp:
         self.timestamps = collections.deque(maxlen=MAX_DATA_POINTS)
         self.temps = collections.deque(maxlen=MAX_DATA_POINTS)
         self.hums = collections.deque(maxlen=MAX_DATA_POINTS)
+
+        # --- Ensure data directory exists ---
+        if not os.path.exists(DATA_DIR):
+            os.makedirs(DATA_DIR)
 
         # --- Style ---
         style = ttk.Style()
@@ -59,7 +75,20 @@ class SensorApp:
         # --- GUI Layout ---
         top_frame = ttk.Frame(root, padding="10")
         top_frame.pack(side=tk.TOP, fill=tk.X, expand=False)
+
+        # Connection Controls
+        conn_lf = ttk.Labelframe(top_frame, text="Connection", padding=10)
+        conn_lf.pack(side=tk.LEFT, padx=10, fill=tk.Y)
+
+        ttk.Label(conn_lf, text="COM Port:").grid(row=0, column=0, padx=5, pady=5, sticky='w')
+        self.port_var = tk.StringVar()
+        self.port_selector = ttk.Combobox(conn_lf, textvariable=self.port_var, state='readonly', width=15)
+        self.port_selector.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
         
+        self.refresh_button = ttk.Button(conn_lf, text="Refresh", command=self.update_ports_list)
+        self.refresh_button.grid(row=0, column=2, padx=5, pady=5)
+        
+        # Live Data Display
         data_lf = ttk.Labelframe(top_frame, text="Live Readings", padding=10)
         data_lf.pack(side=tk.LEFT, padx=10, fill=tk.Y)
         
@@ -72,6 +101,7 @@ class SensorApp:
         ttk.Label(data_lf, text="Humidity:").grid(row=1, column=0, padx=10, pady=5, sticky='w')
         ttk.Label(data_lf, textvariable=self.hum_var, style='Data.TLabel').grid(row=1, column=1, padx=10, pady=5, sticky='e')
 
+        # Alerts Section
         alert_lf = ttk.Labelframe(top_frame, text="Alerts", padding=10)
         alert_lf.pack(side=tk.LEFT, padx=10, fill=tk.Y)
 
@@ -83,6 +113,7 @@ class SensorApp:
         ttk.Label(alert_lf, text="Max Temp (°C):").grid(row=1, column=0, padx=5, pady=5, sticky='w')
         ttk.Entry(alert_lf, textvariable=self.max_temp_var, width=5).grid(row=1, column=1, padx=5, pady=5)
 
+        # Control Buttons
         button_lf = ttk.Labelframe(top_frame, text="Controls", padding=10)
         button_lf.pack(side=tk.LEFT, padx=10, fill=tk.BOTH, expand=True)
 
@@ -98,6 +129,7 @@ class SensorApp:
         self.history_button = ttk.Button(button_lf, text="View Log History", command=self.show_log_history)
         self.history_button.pack(fill=tk.X, expand=True, padx=5, pady=2)
 
+        # Graph Frame
         graph_frame = ttk.Frame(root, padding=10)
         graph_frame.pack(expand=True, fill=tk.BOTH)
 
@@ -108,17 +140,29 @@ class SensorApp:
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
-        self.status_var = tk.StringVar(value="Status: Idle. Press 'Start Monitoring' to begin.")
+        self.status_var = tk.StringVar(value="Status: Select a port and press Start.")
         self.status_bar = ttk.Label(root, textvariable=self.status_var, style='Status.TLabel', relief=tk.SUNKEN, anchor='w')
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
+        self.update_ports_list()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def update_ports_list(self):
+        ports = [port.device for port in serial.tools.list_ports.comports()]
+        self.port_selector['values'] = ports
+        if ports:
+            self.port_var.set(ports[0])
+            self.update_status("Status: Ready to start monitoring.")
+        else:
+            self.port_var.set("")
+            self.update_status("Status: No COM ports found. Please connect a device.")
 
     def open_report_dialog(self):
         """Opens a dialog for the user to select a date range for the report."""
         try:
-            # Pre-fill dates by reading the CSV file
             log_data = pd.read_csv(CSV_FILE)
+            if log_data.empty:
+                raise pd.errors.EmptyDataError
             min_date_str = pd.to_datetime(log_data['Timestamp'].min()).strftime('%Y-%m-%d %H:%M:%S')
             max_date_str = pd.to_datetime(log_data['Timestamp'].max()).strftime('%Y-%m-%d %H:%M:%S')
         except (FileNotFoundError, pd.errors.EmptyDataError):
@@ -161,6 +205,7 @@ class SensorApp:
     def show_log_history(self):
         if self.history_window and self.history_window.winfo_exists():
             self.history_window.deiconify()
+            self.load_history_data() # Reload data when showing again
             return
 
         self.history_window = tk.Toplevel(self.root)
@@ -175,34 +220,45 @@ class SensorApp:
             self.history_tree.heading(col, text=col)
             self.history_tree.column(col, width=150)
         
-        try:
-            with open(CSV_FILE, 'r', newline='') as file:
-                reader = csv.reader(file)
-                next(reader)
-                for row in reader:
-                    self.history_tree.insert("", "end", values=row)
-        except (FileNotFoundError, StopIteration):
-            pass
+        self.load_history_data()
 
         vsb = ttk.Scrollbar(self.history_window, orient="vertical", command=self.history_tree.yview)
         vsb.pack(side='right', fill='y')
         self.history_tree.configure(yscrollcommand=vsb.set)
         self.history_tree.pack(fill='both', expand=True)
 
+    def load_history_data(self):
+        # Clear existing data before loading
+        for item in self.history_tree.get_children():
+            self.history_tree.delete(item)
+        
+        try:
+            with open(CSV_FILE, 'r', newline='') as file:
+                reader = csv.reader(file)
+                next(reader) # Skip header
+                for row in reader:
+                    self.history_tree.insert("", "end", values=row)
+        except (FileNotFoundError, StopIteration):
+            pass # No file or empty file, just show an empty table
+
     def add_log_entry_to_history(self, row_data):
-        if self.history_tree and self.history_window.winfo_exists():
+        if self.history_tree and self.history_window and self.history_window.winfo_exists():
             self.history_tree.insert("", "end", values=row_data)
             self.history_tree.yview_moveto(1.0)
 
     def start_monitoring(self):
+        if not self.port_var.get():
+            messagebox.showerror("Connection Error", "No COM port selected.")
+            return
+
         self.is_monitoring = True
         self.start_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
         self.report_button.config(state=tk.DISABLED)
-        self.update_status("Status: Connecting to Arduino...")
+        self.port_selector.config(state=tk.DISABLED)
+        self.refresh_button.config(state=tk.DISABLED)
+        self.update_status("Status: Connecting to device...")
 
-        if self.history_tree:
-            self.history_tree.delete(*self.history_tree.get_children())
         self.timestamps.clear(); self.temps.clear(); self.hums.clear()
         
         self.serial_thread = threading.Thread(target=self.serial_worker, daemon=True)
@@ -212,10 +268,13 @@ class SensorApp:
     def stop_monitoring(self):
         self.is_monitoring = False
         if self.serial_thread and self.serial_thread.is_alive():
-            self.serial_thread.join(timeout=1.5)
+            # No need to join a daemon thread, it will exit with the app
+            pass
         self.start_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
         self.report_button.config(state=tk.NORMAL)
+        self.port_selector.config(state='readonly')
+        self.refresh_button.config(state=tk.NORMAL)
         self.update_status("Status: Monitoring stopped.")
         
     def update_graph(self):
@@ -232,7 +291,7 @@ class SensorApp:
         
         self.ax_hum.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
         self.fig.autofmt_xdate()
-        self.fig.tight_layout()
+        self.fig.tight_layout(pad=2.0)
         self.canvas.draw()
         
         self.root.after(1000, self.update_graph)
@@ -242,14 +301,15 @@ class SensorApp:
         while self.is_monitoring:
             if self.ser is None or not self.ser.is_open:
                 try:
-                    self.update_status(f"Status: Connecting to {SERIAL_PORT}...")
-                    self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-                    time.sleep(2)
+                    selected_port = self.port_var.get()
+                    self.update_status(f"Status: Connecting to {selected_port}...")
+                    self.ser = serial.Serial(selected_port, BAUD_RATE, timeout=1)
+                    time.sleep(2) # Wait for connection to establish
                     self.update_status("Status: Connected and Monitoring...")
                 except serial.SerialException:
-                    self.update_status("Status: Connection Lost! Reconnecting...")
-                    time.sleep(3)
-                    continue
+                    self.update_status("Status: Connection Failed! Retrying...")
+                    time.sleep(3) # Wait before retrying
+                    continue # Loop back to try connecting again
             else:
                 try:
                     line = self.ser.readline().decode('utf-8').strip()
@@ -300,14 +360,20 @@ class SensorApp:
             if is_alert:
                 self.update_status("Status: !!! TEMPERATURE ALERT !!!")
             else:
-                self.update_status("Status: Connected and Monitoring...")
+                # Only revert status if we are not in another state (like reconnecting)
+                if "Monitoring" in self.status_var.get() or "ALERT" in self.status_var.get():
+                    self.update_status("Status: Connected and Monitoring...")
 
     def parse_data(self, line):
         try:
-            temp_match = re.search(r"Temperature: ([\d\.]+)", line)
-            hum_match = re.search(r"Humidity: ([\d\.]+)", line)
-            return float(temp_match.group(1)), float(hum_match.group(1))
-        except (AttributeError, ValueError): return None, None
+            # This regex is more robust to variations in spacing and wording
+            temp_match = re.search(r"Temperature:\s*([\d\.]+)", line)
+            hum_match = re.search(r"Humidity:\s*([\d\.]+)", line)
+            if temp_match and hum_match:
+                return float(temp_match.group(1)), float(hum_match.group(1))
+        except (AttributeError, ValueError):
+            return None, None
+        return None, None
 
     def update_gui_labels(self, temp, humidity):
         self.temp_var.set(f"{temp:.2f} °C"); self.hum_var.set(f"{humidity:.2f} %")
@@ -332,9 +398,10 @@ class SensorApp:
     def on_closing(self):
         if self.is_monitoring:
             if messagebox.askyesno("Exit", "Monitoring is active. Are you sure you want to exit?"):
-                self.stop_monitoring()
+                self.is_monitoring = False # This will signal the thread to stop
                 self.root.destroy()
-        else: self.root.destroy()
+        else:
+            self.root.destroy()
 
 if __name__ == '__main__':
     root = tk.Tk()
